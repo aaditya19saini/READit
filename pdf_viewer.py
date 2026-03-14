@@ -181,28 +181,28 @@ class PDFViewer(QScrollArea):
 
         try:
             page = self.doc[page_num]
-            # Use a higher DPI matrix for crisp rendering, then scale the pixmap
-            render_scale = self.scale * 2  # render at 2x for sharpness
-            mat = fitz.Matrix(render_scale, render_scale)
+            display_w = max(1, round(page.rect.width * self.scale))
+            display_h = max(1, round(page.rect.height * self.scale))
+            render_ratio = max(2.0, self.devicePixelRatioF())
+            mat = fitz.Matrix(
+                (display_w * render_ratio) / page.rect.width,
+                (display_h * render_ratio) / page.rect.height,
+            )
             pix = page.get_pixmap(matrix=mat, alpha=False)
 
-            # Use PPM format for reliable conversion (no raw pointer issues)
-            ppm_data = pix.tobytes("ppm")
-            qpixmap = QPixmap()
-            qpixmap.loadFromData(ppm_data)
+            image = QImage(
+                pix.samples,
+                pix.width,
+                pix.height,
+                pix.stride,
+                QImage.Format.Format_RGB888,
+            ).copy()
+            qpixmap = QPixmap.fromImage(image)
+            qpixmap.setDevicePixelRatio(render_ratio)
 
             pw = self.page_widgets[page_num]
-            display_w = int(page.rect.width * self.scale)
-            display_h = int(page.rect.height * self.scale)
             pw.setFixedSize(display_w, display_h)
-
-            # Scale the pixmap to the display size for crisp rendering
-            scaled_pixmap = qpixmap.scaled(
-                display_w, display_h,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
-            pw.set_page_pixmap(scaled_pixmap)
+            pw.set_page_pixmap(qpixmap)
 
             self._rendered_pages.add(page_num)
 
