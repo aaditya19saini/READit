@@ -106,6 +106,12 @@ class PDFViewer(QScrollArea):
         # Scroll tracking
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
 
+    def _sync_container_size(self):
+        """Resize the scroll-area widget to match the stacked page layout."""
+        content_size = self._layout.sizeHint()
+        self._container.setFixedSize(content_size)
+        self._container.updateGeometry()
+
     def open_document(self, filepath):
         """Open a PDF file and create page placeholders."""
         if self.doc:
@@ -140,6 +146,8 @@ class PDFViewer(QScrollArea):
             pw.set_placeholder(width, height)
             self._layout.addWidget(pw)
             self.page_widgets.append(pw)
+
+        QTimer.singleShot(0, self._sync_container_size)
 
         # Trigger a render after layout settles
         QTimer.singleShot(100, self._render_visible_pages)
