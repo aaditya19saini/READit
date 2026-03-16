@@ -90,7 +90,7 @@ To build the application into a standalone, double-clickable Windows `.exe` file
    *(Ensure you replace the Python path with your actual local environment python path).*
 3. Once the build finishes, look inside the generated `dist` folder. You will find your standalone `ReadIt.exe` inside!
 
-=======
+
 
 ---
 *Built with ❤️ in Python*
