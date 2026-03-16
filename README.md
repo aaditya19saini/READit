@@ -74,6 +74,7 @@ Navigate like a pro with these handy shortcuts:
 - `search_bar.py`: UI and logic for the in-document search functionality.
 - `theme.py`: Custom QSS (Qt Style Sheets) defining the Dark and Light modes.
 
+
 ## 📦 Deployment (Windows .exe)
 
 To build the application into a standalone, double-clickable Windows `.exe` file (so users don't need Python installed):
@@ -88,6 +89,8 @@ To build the application into a standalone, double-clickable Windows `.exe` file
    ```
    *(Ensure you replace the Python path with your actual local environment python path).*
 3. Once the build finishes, look inside the generated `dist` folder. You will find your standalone `ReadIt.exe` inside!
+
+=======
 
 ---
 *Built with ❤️ in Python*
