@@ -4,7 +4,7 @@ Core rendering engine using PyMuPDF (fitz) with lazy page loading.
 """
 
 from PyQt6.QtWidgets import (QScrollArea, QWidget, QVBoxLayout,
-                              QLabel, QSizePolicy, QApplication)
+                              QLabel, QSizePolicy, QApplication, QMenu, QMessageBox)
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QRect, QPoint
 from PyQt6.QtGui import (QPixmap, QImage, QPainter, QColor,
                           QPen, QBrush, QWheelEvent)
@@ -14,29 +14,126 @@ import fitz
 class PageWidget(QLabel):
     """Widget displaying a single rendered PDF page."""
 
-    def __init__(self, page_num, parent=None):
+    action_requested = pyqtSignal(str, int, list)
+
+    def __init__(self, page_num, parent_viewer, parent=None):
         super().__init__(parent)
         self.page_num = page_num
+        self.parent_viewer = parent_viewer
         self.rendered = False
         self.search_rects = []  # List of fitz.Rect for search highlights
         self.active_match_index = -1
+        
+        self.word_list = None
+        self.selected_word_indices = set()
+        self._drag_start_idx = -1
+        
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         self.setScaledContents(False)
         self.setStyleSheet("background-color: #ffffff; border-radius: 2px;")
+        
+        # Enable context menu
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
+    def get_word_list(self):
+        if self.word_list is None and self.parent_viewer.doc:
+            page = self.parent_viewer.doc[self.page_num]
+            self.word_list = page.get_text("words")
+        return self.word_list or []
+
+    def _get_pdf_coord(self, pos):
+        scale = self.parent_viewer.scale
+        return pos.x() / scale, pos.y() / scale
+
+    def _closest_word_idx(self, pdf_x, pdf_y):
+        words = self.get_word_list()
+        if not words: return -1
+        
+        best_idx = -1
+        best_dist = float('inf')
+        for i, w in enumerate(words):
+            cx = (w[0] + w[2]) / 2
+            cy = (w[1] + w[3]) / 2
+            dx = cx - pdf_x
+            dy = cy - pdf_y
+            # Strongly penalize Y distance to prioritize same-line snapping
+            dist = dx*dx + dy*dy * 10 
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = i
+        return best_idx
+
+    def mousePressEvent(self, event):
+        tool = self.parent_viewer.current_tool
+        if tool in ("Select", "Highlight"):
+            if event.button() == Qt.MouseButton.LeftButton:
+                px, py = self._get_pdf_coord(event.pos())
+                idx = self._closest_word_idx(px, py)
+                self._drag_start_idx = idx
+                self.selected_word_indices = set([idx] if idx != -1 else [])
+                self.update()
+        elif tool == "Eraser":
+            if event.button() == Qt.MouseButton.LeftButton:
+                px, py = self._get_pdf_coord(event.pos())
+                self.parent_viewer.handle_erase(self.page_num, px, py)
+        else:
+            super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        tool = self.parent_viewer.current_tool
+        if tool in ("Select", "Highlight") and self._drag_start_idx != -1:
+            if event.buttons() & Qt.MouseButton.LeftButton:
+                px, py = self._get_pdf_coord(event.pos())
+                idx = self._closest_word_idx(px, py)
+                if idx != -1:
+                    start = min(self._drag_start_idx, idx)
+                    end = max(self._drag_start_idx, idx)
+                    self.selected_word_indices = set(range(start, end + 1))
+                    self.update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        tool = self.parent_viewer.current_tool
+        if tool == "Highlight" and self.selected_word_indices:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self.parent_viewer.handle_highlight(self.page_num, self.selected_word_indices)
+                self.selected_word_indices.clear()
+                self._drag_start_idx = -1
+                self.update()
+        elif tool == "Select":
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._drag_start_idx = -1
+        super().mouseReleaseEvent(event)
+
+    def show_context_menu(self, pos):
+        if not self.selected_word_indices:
+            return
+        menu = QMenu(self)
+        copy_action = menu.addAction("Copy Text")
+        hi_action = menu.addAction("Highlight Text")
+        
+        action = menu.exec(self.mapToGlobal(pos))
+        if action == copy_action:
+            self.parent_viewer.handle_copy(self.page_num, self.selected_word_indices)
+            self.selected_word_indices.clear()
+            self.update()
+        elif action == hi_action:
+            self.parent_viewer.handle_highlight(self.page_num, self.selected_word_indices)
+            self.selected_word_indices.clear()
+            self.update()
 
     def set_page_pixmap(self, pixmap):
-        """Set the rendered page image."""
         self.setPixmap(pixmap)
         self.rendered = True
+        self.word_list = None
 
     def set_placeholder(self, width, height):
-        """Set a blank placeholder of the correct size."""
         self.setFixedSize(int(width), int(height))
         self.rendered = False
 
     def set_search_highlights(self, rects, active_index=-1):
-        """Set search highlight rectangles and repaint."""
         self.search_rects = rects
         self.active_match_index = active_index
         self.update()
@@ -48,23 +145,38 @@ class PageWidget(QLabel):
 
     def paintEvent(self, event):
         super().paintEvent(event)
-        if not self.search_rects:
+        if not self.search_rects and not self.selected_word_indices:
             return
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        for i, rect in enumerate(self.search_rects):
-            if i == self.active_match_index:
-                painter.setBrush(QBrush(QColor(255, 140, 0, 120)))
-                painter.setPen(QPen(QColor(255, 140, 0), 2))
-            else:
-                painter.setBrush(QBrush(QColor(255, 213, 0, 80)))
-                painter.setPen(QPen(QColor(255, 213, 0), 1))
-            painter.drawRect(QRect(
-                int(rect.x0), int(rect.y0),
-                int(rect.width), int(rect.height)
-            ))
+        if self.search_rects:
+            for i, rect in enumerate(self.search_rects):
+                if i == self.active_match_index:
+                    painter.setBrush(QBrush(QColor(255, 140, 0, 120)))
+                    painter.setPen(QPen(QColor(255, 140, 0), 2))
+                else:
+                    painter.setBrush(QBrush(QColor(255, 213, 0, 80)))
+                    painter.setPen(QPen(QColor(255, 213, 0), 1))
+                painter.drawRect(QRect(
+                    int(rect.x0), int(rect.y0),
+                    int(rect.width), int(rect.height)
+                ))
+
+        if self.selected_word_indices:
+            painter.setBrush(QBrush(QColor(0, 120, 215, 80)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            scale = self.parent_viewer.scale
+            words = self.get_word_list()
+            
+            for idx in self.selected_word_indices:
+                if 0 <= idx < len(words):
+                    w = words[idx]
+                    painter.drawRect(QRect(
+                        int(w[0] * scale), int(w[1] * scale),
+                        int((w[2] - w[0]) * scale), int((w[3] - w[1]) * scale)
+                    ))
 
         painter.end()
 
@@ -74,6 +186,7 @@ class PDFViewer(QScrollArea):
 
     page_changed = pyqtSignal(int)  # emits current page (0-indexed)
     zoom_changed = pyqtSignal(float)
+    unsaved_changes_state_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -96,6 +209,9 @@ class PDFViewer(QScrollArea):
         self._rendered_pages = set()
         self._search_matches = []  # List of (page_num, [fitz.Rect])
         self._search_index = -1
+        
+        self.current_tool = "Hand"
+        self._has_unsaved_changes = False
 
         # Lazy render timer
         self._render_timer = QTimer()
@@ -105,6 +221,98 @@ class PDFViewer(QScrollArea):
 
         # Scroll tracking
         self.verticalScrollBar().valueChanged.connect(self._on_scroll)
+
+    @property
+    def has_unsaved_changes(self):
+        return self._has_unsaved_changes
+
+    @has_unsaved_changes.setter
+    def has_unsaved_changes(self, value):
+        if self._has_unsaved_changes != value:
+            self._has_unsaved_changes = value
+            self.unsaved_changes_state_changed.emit(value)
+
+    def set_tool(self, tool_name):
+        self.current_tool = tool_name
+        if tool_name == "Hand":
+            self.viewport().setCursor(Qt.CursorShape.OpenHandCursor)
+            self._clear_selections()
+        elif tool_name in ("Select", "Highlight"):
+            self.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        elif tool_name == "Eraser":
+            self.viewport().setCursor(Qt.CursorShape.CrossCursor)
+            self._clear_selections()
+
+    def _clear_selections(self):
+        for pw in self.page_widgets:
+            if pw.selected_word_indices:
+                pw.selected_word_indices.clear()
+                pw.update()
+
+    def handle_copy(self, page_num, word_indices):
+        if not self.doc: return
+        page = self.doc[page_num]
+        words = page.get_text("words")
+        if not words: return
+        
+        selected_texts = []
+        for idx in sorted(list(word_indices)):
+            if 0 <= idx < len(words):
+                selected_texts.append(words[idx][4])
+                
+        text = " ".join(selected_texts)
+        if text:
+            QApplication.clipboard().setText(text)
+
+    def handle_highlight(self, page_num, word_indices):
+        if not self.doc: return
+        page = self.doc[page_num]
+        words = page.get_text("words")
+        if not words: return
+        
+        quads = []
+        for idx in word_indices:
+            if 0 <= idx < len(words):
+                w = words[idx]
+                r = fitz.Rect(w[0], w[1], w[2], w[3])
+                quads.append(r.quad)
+                
+        if quads:
+            page.add_highlight_annot(quads)
+            self.has_unsaved_changes = True
+            if page_num in self._rendered_pages:
+                self._rendered_pages.remove(page_num)
+            self._render_page(page_num)
+
+    def handle_erase(self, page_num, pdf_x, pdf_y):
+        if not self.doc: return
+        page = self.doc[page_num]
+        pt = fitz.Point(pdf_x, pdf_y)
+        deleted = False
+        for annot in page.annots():
+            if annot.type[0] == fitz.PDF_ANNOT_HIGHLIGHT and annot.rect.contains(pt):
+                page.delete_annot(annot)
+                deleted = True
+                
+        if deleted:
+            self.has_unsaved_changes = True
+            if page_num in self._rendered_pages:
+                self._rendered_pages.remove(page_num)
+            self._render_page(page_num)
+
+    def save_changes(self):
+        if not self.doc or not self.has_unsaved_changes:
+            return
+        filepath = self.doc.name
+        try:
+            self.doc.saveIncr()
+            self.has_unsaved_changes = False
+        except Exception as e:
+            try:
+                self.doc.save(filepath, incremental=True, encryption=fitz.PDF_ENCRYPT_KEEP)
+                self.has_unsaved_changes = False
+            except Exception as e2:
+                QMessageBox.warning(self, "Save Error", f"Could not save changes to the PDF.\n{e2}")
 
     def _sync_container_size(self):
         """Resize the scroll-area widget to match the stacked page layout."""
@@ -122,6 +330,7 @@ class PDFViewer(QScrollArea):
         self._rendered_pages.clear()
         self._search_matches.clear()
         self._search_index = -1
+        self.has_unsaved_changes = False
 
         # Set a reasonable initial scale, then create placeholders
         self.scale = 1.5  # default decent scale
@@ -140,7 +349,7 @@ class PDFViewer(QScrollArea):
 
         for i in range(len(self.doc)):
             page = self.doc[i]
-            pw = PageWidget(i)
+            pw = PageWidget(i, self)
             width = page.rect.width * self.scale
             height = page.rect.height * self.scale
             pw.set_placeholder(width, height)

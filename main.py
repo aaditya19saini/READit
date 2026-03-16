@@ -245,6 +245,45 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        # Tools
+        from PyQt6.QtGui import QActionGroup
+        self.tool_group = QActionGroup(self)
+        
+        self.act_hand = QAction("✋ Hand", self)
+        self.act_hand.setCheckable(True)
+        self.act_hand.setChecked(True)
+        self.act_hand.triggered.connect(lambda: self.viewer.set_tool("Hand"))
+        self.tool_group.addAction(self.act_hand)
+        tb.addAction(self.act_hand)
+
+        self.act_select = QAction("🔤 Select", self)
+        self.act_select.setCheckable(True)
+        self.act_select.triggered.connect(lambda: self.viewer.set_tool("Select"))
+        self.tool_group.addAction(self.act_select)
+        tb.addAction(self.act_select)
+
+        self.act_highlight = QAction("🖍️ Highlight", self)
+        self.act_highlight.setCheckable(True)
+        self.act_highlight.triggered.connect(lambda: self.viewer.set_tool("Highlight"))
+        self.tool_group.addAction(self.act_highlight)
+        tb.addAction(self.act_highlight)
+
+        self.act_eraser = QAction("🧹 Eraser", self)
+        self.act_eraser.setCheckable(True)
+        self.act_eraser.triggered.connect(lambda: self.viewer.set_tool("Eraser"))
+        self.tool_group.addAction(self.act_eraser)
+        tb.addAction(self.act_eraser)
+
+        tb.addSeparator()
+
+        self.act_save = QAction("💾 Save", self)
+        self.act_save.setToolTip("Save Changes (Ctrl+S)")
+        self.act_save.setEnabled(False)
+        self.act_save.triggered.connect(self._save_changes)
+        tb.addAction(self.act_save)
+
+        tb.addSeparator()
+
         # Right side actions
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -315,12 +354,26 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence("F11"), self).activated.connect(self._toggle_fullscreen)
         QShortcut(QKeySequence("T"), self).activated.connect(self._toggle_sidebar)
         QShortcut(QKeySequence("Escape"), self).activated.connect(self.search_bar.close_search)
+        QShortcut(QKeySequence("Ctrl+S"), self).activated.connect(self._save_changes)
 
     def _connect_signals(self):
         """Wire up signals between components."""
         self.viewer.page_changed.connect(self._on_page_changed)
         self.viewer.zoom_changed.connect(self._on_zoom_changed)
+        self.viewer.unsaved_changes_state_changed.connect(self._on_unsaved_changes)
         self.sidebar.page_clicked.connect(self.viewer.go_to_page)
+
+    def _on_unsaved_changes(self, has_unsaved):
+        self.act_save.setEnabled(has_unsaved)
+        title = self.windowTitle()
+        if has_unsaved and not title.endswith("*"):
+            self.setWindowTitle(title + "*")
+        elif not has_unsaved and title.endswith("*"):
+            self.setWindowTitle(title[:-1])
+
+    def _save_changes(self):
+        self.viewer.save_changes()
+        self.status_label.setText("Changes saved")
 
     # ========== FILE HANDLING ==========
 
